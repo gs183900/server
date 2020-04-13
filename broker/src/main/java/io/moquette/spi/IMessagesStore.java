@@ -122,7 +122,7 @@ public interface IMessagesStore {
     boolean isMemberInGroup(String member, String groupId);
     ErrorCode canSendMessageInGroup(String member, String groupId);
 
-    ErrorCode recallMessage(long messageUid, String operatorId, boolean isAdmin);
+    ErrorCode recallMessage(long messageUid, String operatorId, String clientId, boolean isAdmin);
 
     void clearUserMessages(String userId);
 
@@ -130,6 +130,8 @@ public interface IMessagesStore {
     void addRobot(WFCMessage.Robot robot);
     ErrorCode getUserInfo(List<WFCMessage.UserRequest> requestList, WFCMessage.PullUserResult.Builder builder);
     ErrorCode modifyUserInfo(String userId, WFCMessage.ModifyMyInfoRequest request) throws Exception;
+
+    void updateUserOnlineSetting(MemorySessionStore.Session session, boolean online);
 
     ErrorCode modifyUserStatus(String userId, int status);
     int getUserStatus(String userId);

@@ -26,6 +26,7 @@ import com.xiaoleilu.loServer.model.FriendData;
 import cn.wildfirechat.pojos.InputOutputUserBlockStatus;
 import cn.wildfirechat.common.ErrorCode;
 import io.moquette.BrokerConstants;
+import io.moquette.imhandler.IMHandler;
 import io.moquette.server.Constants;
 import io.moquette.server.Server;
 import io.moquette.spi.IMatchingCondition;
@@ -55,10 +56,12 @@ import static cn.wildfirechat.proto.ProtoConstants.GroupMemberType.*;
 import static cn.wildfirechat.proto.ProtoConstants.ModifyChannelInfoType.*;
 import static cn.wildfirechat.proto.ProtoConstants.ModifyGroupInfoType.*;
 import static cn.wildfirechat.proto.ProtoConstants.PersistFlag.Transparent;
+import static cn.wildfirechat.proto.ProtoConstants.Platform.*;
 import static io.moquette.BrokerConstants.*;
 import static io.moquette.server.Constants.MAX_CHATROOM_MESSAGE_QUEUE;
 import static io.moquette.server.Constants.MAX_MESSAGE_QUEUE;
 import static win.liyufan.im.MyInfoType.*;
+import static win.liyufan.im.UserSettingScope.kUserSettingPCOnline;
 
 public class MemoryMessagesStore implements IMessagesStore {
     private static final String MESSAGES_MAP = "messages_map";
@@ -118,10 +121,14 @@ public class MemoryMessagesStore implements IMessagesStore {
     private ConcurrentHashMap<String, Boolean> userPushHiddenDetail = new ConcurrentHashMap<>();
     private ConcurrentHashMap<String, Boolean> userConvSlientMap = new ConcurrentHashMap<>();
 
+    private boolean mDisableSearch = false;
+    private boolean mDisableNicknameSearch = false;
+    private boolean mDisableFriendRequest = false;
     private long mFriendRequestDuration = 7 * 24 * 60 * 60 * 1000;
     private long mFriendRejectDuration = 30 * 24 * 60 * 60 * 1000;
     private long mFriendRequestExpiration = 7 * 24 * 60 * 60 * 1000;
 
+    private boolean mMultiPlatformNotification = false;
     private boolean mDisableStrangerChat = false;
 
     private long mChatroomParticipantIdleTime = 900000;
@@ -130,6 +137,7 @@ public class MemoryMessagesStore implements IMessagesStore {
     MemoryMessagesStore(Server server, DatabaseStore databaseStore) {
         m_Server = server;
         this.databaseStore = databaseStore;
+
         IS_MESSAGE_ROAMING = "1".equals(m_Server.getConfig().getProperty(MESSAGE_ROAMING));
         IS_MESSAGE_REMOTE_HISTORY_MESSAGE = "1".equals(m_Server.getConfig().getProperty(MESSAGE_Remote_History_Message));
         Constants.MAX_MESSAGE_QUEUE = Integer.parseInt(m_Server.getConfig().getProperty(MESSAGE_Max_Queue));
@@ -139,6 +147,37 @@ public class MemoryMessagesStore implements IMessagesStore {
         } catch (Exception e) {
             e.printStackTrace();
             Utility.printExecption(LOG, e);
+            printMissConfigLog(MESSAGE_Disable_Stranger_Chat, mDisableStrangerChat + "");
+        }
+
+        try {
+            mMultiPlatformNotification = Boolean.parseBoolean(m_Server.getConfig().getProperty(BrokerConstants.SERVER_MULTI_PLATFROM_NOTIFICATION, "false"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            Utility.printExecption(LOG, e);
+            printMissConfigLog(SERVER_MULTI_PLATFROM_NOTIFICATION, mDisableStrangerChat + "");
+        }
+
+        try {
+            mDisableSearch = Boolean.parseBoolean(m_Server.getConfig().getProperty(BrokerConstants.FRIEND_Disable_Search));
+        } catch (Exception e) {
+            e.printStackTrace();
+            Utility.printExecption(LOG, e);
+            printMissConfigLog(FRIEND_Disable_Search, mDisableSearch + "");
+        }
+        try {
+            mDisableNicknameSearch = Boolean.parseBoolean(m_Server.getConfig().getProperty(BrokerConstants.FRIEND_Disable_NickName_Search));
+        } catch (Exception e) {
+            e.printStackTrace();
+            Utility.printExecption(LOG, e);
+            printMissConfigLog(FRIEND_Disable_NickName_Search, mDisableNicknameSearch + "");
+        }
+        try {
+            mDisableFriendRequest = Boolean.parseBoolean(m_Server.getConfig().getProperty(BrokerConstants.FRIEND_Disable_Friend_Request));
+        } catch (Exception e) {
+            e.printStackTrace();
+            Utility.printExecption(LOG, e);
+            printMissConfigLog(FRIEND_Disable_Friend_Request, mDisableFriendRequest + "");
         }
 
         try {
@@ -146,6 +185,7 @@ public class MemoryMessagesStore implements IMessagesStore {
         } catch (Exception e) {
             e.printStackTrace();
             Utility.printExecption(LOG, e);
+            printMissConfigLog(FRIEND_Repeat_Request_Duration, mFriendRequestDuration + "");
         }
 
         try {
@@ -153,6 +193,7 @@ public class MemoryMessagesStore implements IMessagesStore {
         } catch (Exception e) {
             e.printStackTrace();
             Utility.printExecption(LOG, e);
+            printMissConfigLog(FRIEND_Reject_Request_Duration, mFriendRejectDuration + "");
         }
 
         try {
@@ -160,6 +201,7 @@ public class MemoryMessagesStore implements IMessagesStore {
         } catch (Exception e) {
             e.printStackTrace();
             Utility.printExecption(LOG, e);
+            printMissConfigLog(FRIEND_Request_Expiration_Duration, mFriendRequestExpiration + "");
         }
 
         try {
@@ -167,6 +209,7 @@ public class MemoryMessagesStore implements IMessagesStore {
         } catch (Exception e) {
             e.printStackTrace();
             Utility.printExecption(LOG, e);
+            printMissConfigLog(CHATROOM_Rejoin_When_Active, mChatroomRejoinWhenActive + "");
         }
 
         try {
@@ -174,7 +217,12 @@ public class MemoryMessagesStore implements IMessagesStore {
         } catch (Exception e) {
             e.printStackTrace();
             Utility.printExecption(LOG, e);
+            printMissConfigLog(CHATROOM_Participant_Idle_Time, mChatroomParticipantIdleTime + "");
         }
+    }
+
+    private void printMissConfigLog(String config, String defaultValue) {
+        LOG.info("配置文件中缺少配置项目 {}, 缺省值为 {}，可以忽略本提醒，或者更新配置项", config, defaultValue);
     }
 
     @Override
@@ -1322,7 +1370,7 @@ public class MemoryMessagesStore implements IMessagesStore {
     }
 
     @Override
-    public ErrorCode recallMessage(long messageUid, String operatorId, boolean isAdmin) {
+    public ErrorCode recallMessage(long messageUid, String operatorId, String clientId, boolean isAdmin) {
         HazelcastInstance hzInstance = m_Server.getHazelcastInstance();
         IMap<Long, MessageBundle> mIMap = hzInstance.getMap(MESSAGES_MAP);
 
@@ -1373,8 +1421,14 @@ public class MemoryMessagesStore implements IMessagesStore {
                 return ErrorCode.ERROR_CODE_NOT_RIGHT;
             }
 
-            message = message.toBuilder().setContent(message.getContent().toBuilder().setContent(operatorId).setType(80).clearSearchableContent().setData(ByteString.copyFrom(new StringBuffer().append(messageUid).toString().getBytes())).build()).build();
+            String searchContent = message.getContent().getSearchableContent() == null ? "" : message.getContent().getSearchableContent();
+            String cont = message.getContent().getContent() == null ? "" : message.getContent().getContent();
+            String extra = message.getContent().getExtra() == null ? "" : message.getContent().getExtra();
+            String recalledContent = "{\"s\":\"" + message.getFromUser() +  "\",\"ts\":" + message.getServerTimestamp() +  ",\"t\":" + message.getContent().getType() + ",\"sc\":\"" + searchContent + "\",\"c\":\"" + cont + "\",\"e\":\"" + extra  + "\"}";
+
+            message = message.toBuilder().setContent(message.getContent().toBuilder().setContent(operatorId).setType(80).clearSearchableContent().setData(ByteString.copyFrom(String.valueOf(messageUid).getBytes())).setExtra(recalledContent).build()).build();
             messageBundle.setMessage(message);
+            messageBundle.setFromClientId(clientId);
 
             databaseStore.deleteMessage(messageUid);
 
@@ -1525,6 +1579,56 @@ public class MemoryMessagesStore implements IMessagesStore {
     }
 
     @Override
+    public void updateUserOnlineSetting(MemorySessionStore.Session session, boolean online) {
+        if(!mMultiPlatformNotification) {
+            return;
+        }
+        if (m_Server.getStore().sessionsStore().isMultiEndpointSupported()) {
+            return;
+        }
+
+        if (m_Server.isShutdowning()) {
+            return;
+        }
+
+        if (session.getPlatform() == Platform_Linux || session.getPlatform() == Platform_Windows || session.getPlatform() == Platform_OSX) {
+            updateUserSettings(session.username, WFCMessage.ModifyUserSettingReq.newBuilder().setScope(kUserSettingPCOnline).setKey("PC").setValue(online ? (System.currentTimeMillis()  + "|"  + session.getPlatform() + "|" + session.getClientID() + "|" + session.getPhoneName()) : "").build());
+        } else {
+            String value = null;
+            for (MemorySessionStore.Session s : m_Server.getStore().sessionsStore().sessionForUser(session.username)) {
+                if (s.getDeleted() != 0 || !m_Server.getConnectionsManager().isConnected(s.getClientID())) {
+                    continue;
+                }
+
+                switch (s.getPlatform()) {
+                    case Platform_Linux:
+                    case Platform_Windows:
+                    case Platform_OSX:
+                        value = System.currentTimeMillis() + "|" + s.getPlatform() + "|" + s.getClientID() + "|" + s.getPhoneName();
+                        break;
+                    default:
+                        break;
+                }
+
+                if (value != null) {
+                    break;
+                }
+            }
+
+            WFCMessage.UserSettingEntry pcentry = getUserSetting(session.getUsername(), kUserSettingPCOnline, "PC");
+            if (value != null) {
+                if (pcentry == null || StringUtil.isNullOrEmpty(pcentry.getValue())) {
+                    updateUserSettings(session.username, WFCMessage.ModifyUserSettingReq.newBuilder().setScope(kUserSettingPCOnline).setKey("PC").setValue(value).build());
+                }
+            } else {
+                if (pcentry != null && !StringUtil.isNullOrEmpty(pcentry.getValue())) {
+                    updateUserSettings(session.username, WFCMessage.ModifyUserSettingReq.newBuilder().setScope(kUserSettingPCOnline).setKey("PC").setValue("").build());
+                }
+            }
+        }
+    }
+
+    @Override
     public ErrorCode modifyUserStatus(String userId, int status) {
         HazelcastInstance hzInstance = m_Server.getHazelcastInstance();
         IMap<String, Integer> mUserMap = hzInstance.getMap(USER_STATUS);
@@ -1612,6 +1716,14 @@ public class MemoryMessagesStore implements IMessagesStore {
     }
     @Override
     public List<WFCMessage.User> searchUser(String keyword, int searchType, int page) {
+        if (mDisableSearch) {
+            return new ArrayList<>();
+        }
+
+        if (mDisableNicknameSearch && searchType == ProtoConstants.SearchUserType.SearchUserType_General) {
+            searchType = ProtoConstants.SearchUserType.SearchUserType_Name_Mobile;
+        }
+
         return databaseStore.searchUserFromDB(keyword, searchType, page);
     }
 
@@ -1945,6 +2057,10 @@ public class MemoryMessagesStore implements IMessagesStore {
 
     @Override
     public ErrorCode saveAddFriendRequest(String userId, WFCMessage.AddFriendRequest request, long[] head) {
+        if (mDisableFriendRequest) {
+            return ErrorCode.ERROR_CODE_NOT_RIGHT;
+        }
+
         HazelcastInstance hzInstance = m_Server.getHazelcastInstance();
         MultiMap<String, WFCMessage.FriendRequest> requestMap = hzInstance.getMultiMap(USER_FRIENDS_REQUEST);
         Collection<WFCMessage.FriendRequest> requests = requestMap.get(userId);
@@ -2454,6 +2570,7 @@ public class MemoryMessagesStore implements IMessagesStore {
         userGlobalSlientMap.remove(userId);
         userConvSlientMap.remove(userId);
         userPushHiddenDetail.remove(userId);
+        IMHandler.getPublisher().publishNotification(IMTopic.NotifyUserSettingTopic, userId, updateDt);
         return updateDt;
     }
 
